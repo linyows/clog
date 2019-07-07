@@ -37,13 +37,47 @@ type Analysis struct {
 	sync.RWMutex
 }
 
-type Result struct {
-	name string
-	data gocloc.JSONLanguagesResult
+// Lang
+type Lang struct {
+	Name       string `json:"name,omitempty"`
+	FilesCount int32  `json:"files"`
+	Code       int32  `json:"code"`
+	Comments   int32  `json:"comment"`
+	Blanks     int32  `json:"blank"`
 }
 
+// Langs
+type Langs []*Lang
+
+func (ll Langs) Len() int {
+	return len(ll)
+}
+func (ll Langs) Swap(i, j int) {
+	ll[i], ll[j] = ll[j], ll[i]
+}
+func (ll Langs) Less(i, j int) bool {
+	if ll[i].Code == ll[j].Code {
+		return ll[i].Name < ll[j].Name
+	}
+	return ll[i].Code > ll[j].Code
+}
+
+// JSONData
+type JSONData struct {
+	Langs Langs `json:"languages"`
+	Total Lang  `json:"total"`
+}
+
+// Result
+type Result struct {
+	name string
+	data JSONData
+}
+
+// Report
 type Report struct {
-	results []Result
+	analysis *Analysis
+	results  []Result
 }
 
 func main() {
@@ -81,7 +115,7 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, fmt.Sprintf("analyzed:  %d/%d\n", len(a.clocs), len(a.repos)))
 
-	r := &Report{}
+	r := &Report{analysis: a}
 	err = r.loadData()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, fmt.Sprintf("Error: %s\n", err))
@@ -105,15 +139,15 @@ func (r *Report) loadData() error {
 
 		name := f.Name()
 		bytes, _ := ioutil.ReadFile(filepath.Join(dir, name))
-		var result gocloc.JSONLanguagesResult
-		err := json.Unmarshal(bytes, &result)
+		var data JSONData
+		err := json.Unmarshal(bytes, &data)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, fmt.Sprintf("Error: %s\n", err))
 			continue
 		}
 		r.results = append(r.results, Result{
 			name: strings.Replace(name, ".json", "", 1),
-			data: result,
+			data: data,
 		})
 	}
 
@@ -129,49 +163,63 @@ func (r *Report) show() {
 	rowLen := 79
 	headerLen := 28
 
-	result := make(map[string]*gocloc.ClocLanguage)
-	total := &gocloc.ClocLanguage{Name: "TOTAL"}
+	var orgLangs Langs
+	orgTotal := &Lang{Name: "TOTAL", FilesCount: 0, Comments: 0, Code: 0, Blanks: 0}
 
 	for _, rr := range r.results {
 		tt := rr.data.Total
-		langs := rr.data.Languages
+		ll := rr.data.Langs
 
-		//fmt.Printf("%s\n", rr.name)
-		//fmt.Printf("%.[2]*[1]s\n", separator, rowLen)
-		//fmt.Printf("%-[2]*[1]s %[3]s\n", header, headerLen, commonHeader)
-		//fmt.Printf("%.[2]*[1]s\n", separator, rowLen)
-		for _, l := range langs {
-			//fmt.Printf("%-27v %6v %14v %14v %14v\n", l.Name, l.FilesCount, l.Blanks, l.Comments, l.Code)
-			if _, ok := result[l.Name]; !ok {
-				//fmt.Printf("%s, %d\n", l.Name, l.Code)
-				result[l.Name] = &l
-			} else {
-				result[l.Name].FilesCount += l.FilesCount
-				result[l.Name].Blanks += l.Blanks
-				result[l.Name].Comments += l.Comments
-				result[l.Name].Code += l.Code
+		for _, l := range ll {
+			nofound := true
+			for _, ol := range orgLangs {
+				if ol.Name == l.Name {
+					ol.FilesCount += l.FilesCount
+					ol.Blanks += l.Blanks
+					ol.Comments += l.Comments
+					ol.Code += l.Code
+					nofound = false
+					break
+				}
+			}
+			if nofound {
+				orgLangs = append(orgLangs, l)
 			}
 		}
-		//fmt.Printf("%.[2]*[1]s\n", separator, rowLen)
-		//fmt.Printf("%-27v %6v %14v %14v %14v\n", "TOTAL", tt.FilesCount, tt.Blanks, tt.Comments, tt.Code)
-		//fmt.Printf("%.[2]*[1]s\n\n", separator, rowLen)
 
-		total.FilesCount += tt.FilesCount
-		total.Blanks += tt.Blanks
-		total.Comments += tt.Comments
-		total.Code += tt.Code
+		orgTotal.FilesCount += tt.FilesCount
+		orgTotal.Blanks += tt.Blanks
+		orgTotal.Comments += tt.Comments
+		orgTotal.Code += tt.Code
 	}
 
-	fmt.Printf("all\n")
+	var sortedOrgLangs Langs
+	for _, l := range orgLangs {
+		sortedOrgLangs = append(sortedOrgLangs, l)
+	}
+	sort.Sort(sortedOrgLangs)
+
 	fmt.Printf("%.[2]*[1]s\n", separator, rowLen)
 	fmt.Printf("%-[2]*[1]s %[3]s\n", header, headerLen, commonHeader)
 	fmt.Printf("%.[2]*[1]s\n", separator, rowLen)
-	for k, v := range result {
-		fmt.Printf("%-27v %6v %14v %14v %14v\n", k, v.FilesCount, v.Blanks, v.Comments, v.Code)
+	for _, v := range sortedOrgLangs {
+		fmt.Printf("%-27v %6v %14v %14v %14v\n", v.Name, v.FilesCount, v.Blanks, v.Comments, v.Code)
 	}
 	fmt.Printf("%.[2]*[1]s\n", separator, rowLen)
-	fmt.Printf("%-27v %6v %14v %14v %14v\n", "TOTAL", total.FilesCount, total.Blanks, total.Comments, total.Code)
-	fmt.Printf("%.[2]*[1]s\n\n", separator, rowLen)
+	fmt.Printf("%-27v %6v %14v %14v %14v\n", "TOTAL", orgTotal.FilesCount, orgTotal.Blanks, orgTotal.Comments, orgTotal.Code)
+	fmt.Printf("%.[2]*[1]s\n", separator, rowLen)
+
+	for _, rr := range r.results {
+		if len(rr.data.Langs) == 0 {
+			continue
+		}
+		ll := rr.data.Langs
+		fmt.Printf("%s/%s\n--\n", r.analysis.github.org, rr.name)
+		for _, l := range ll {
+			fmt.Printf("%-27v %6v %14v %14v %14v\n", l.Name, l.FilesCount, l.Blanks, l.Comments, l.Code)
+		}
+		fmt.Printf("%.[2]*[1]s\n", separator, rowLen)
+	}
 }
 
 func (g *GitHub) client(ctx context.Context) (*github.Client, error) {
@@ -269,13 +317,13 @@ func (a *Analysis) doClocBeforeClone(URL string) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		err := a.clone(URL, path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, fmt.Sprintf("clone error: %s\n%s\n", URL, err))
+			if err.Error() != "remote repository is empty" {
+				fmt.Fprintf(os.Stderr, fmt.Sprintf("clone error: %s\n%s\n", URL, err))
+			}
 			return
 		} else {
 			fmt.Fprintf(os.Stderr, fmt.Sprintf("cloned %s\n", URL))
 		}
-	} else {
-		fmt.Fprintf(os.Stderr, fmt.Sprintf("clone skipped %s\n", URL))
 	}
 
 	jsonPath := "analyzed/" + name + ".json"
